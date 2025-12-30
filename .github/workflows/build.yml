@@ -34,7 +34,7 @@ jobs:
           
       - name: Build APK
         run: |
-          flet build apk --verbose
+          flet build apk --verbose --include-packages flet,openai
           
       - name: Upload APK
         uses: actions/upload-artifact@v4
