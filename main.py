@@ -126,7 +126,6 @@ async def main(page: ft.Page):
     # --- Logic ---
     
     async def process_ai_response(full_message):
-        nonlocal chat_history
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         system_prompt = f"""You are a digital clone of '{config['agent_nickname']}'.
