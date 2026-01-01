@@ -34,6 +34,8 @@ jobs:
           
       - name: Build APK
         run: |
+          # 预先设置 Android SDK 环境变量以规避潜在的许可协议问题
+          yes | sdkmanager --licenses || true
           flet build apk --verbose
           
       - name: Upload APK
