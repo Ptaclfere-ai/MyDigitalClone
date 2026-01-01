@@ -4,10 +4,9 @@ import json
 import os
 import datetime
 import random
-from openai import AsyncOpenAI
+import urllib.request
 
 # --- Configuration & Constants ---
-CONFIG_FILE = "config.json"
 DEFAULT_CONFIG = {
     "user_nickname": "我",
     "agent_nickname": "Yy",
@@ -19,39 +18,69 @@ DEFAULT_CONFIG = {
 
 API_KEY = "sk-dc4c6988c52c46d88d8f1d742e099721"
 MODEL_NAME = "deepseek-chat"
-BASE_URL = "https://api.deepseek.com"
+BASE_URL = "https://api.deepseek.com/chat/completions"
 CONTEXT_FILENAME = "deepseek_context.txt"
 
-# Initialize Async Client
-client = AsyncOpenAI(api_key=API_KEY, base_url=BASE_URL)
 LONG_CONTEXT = ""
 chat_history = []
 
 def load_context():
     global LONG_CONTEXT
     try:
+        # On Android, current working directory might not be where assets are.
+        # But Flet usually unpacks assets to a temp dir or handles paths relative to main.py
         if os.path.exists(CONTEXT_FILENAME):
             with open(CONTEXT_FILENAME, "r", encoding="utf-8") as f:
                 LONG_CONTEXT = f.read()
-    except Exception:
+    except Exception as e:
+        print(f"Error loading context: {e}")
         pass
 
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                return {**DEFAULT_CONFIG, **json.load(f)}
-        except:
-            pass
-    return DEFAULT_CONFIG.copy()
-
-def save_config(config):
-    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=4, ensure_ascii=False)
+async def call_deepseek_api(messages):
+    """
+    Call DeepSeek API using standard library (urllib) to avoid dependency issues on Android.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {API_KEY}"
+    }
+    data = {
+        "model": MODEL_NAME,
+        "messages": messages,
+        "temperature": 1.3,
+        "max_tokens": 500
+    }
+    
+    def _make_request():
+        req = urllib.request.Request(BASE_URL, data=json.dumps(data).encode('utf-8'), headers=headers)
+        with urllib.request.urlopen(req) as response:
+            return json.loads(response.read().decode('utf-8'))
+            
+    # Run network request in a separate thread to keep UI responsive
+    loop = asyncio.get_running_loop()
+    response_json = await loop.run_in_executor(None, _make_request)
+    return response_json['choices'][0]['message']['content']
 
 async def main(page: ft.Page):
     # --- Setup ---
-    config = load_config()
+    # Load config from ClientStorage (safer for Mobile than file system)
+    try:
+        await page.client_storage.get_async("app_config") # Check if async works, or use sync
+        # Flet client_storage is synchronous usually, but let's use standard get
+        stored_config = page.client_storage.get("app_config")
+    except Exception:
+        stored_config = None
+        
+    config = DEFAULT_CONFIG.copy()
+    if stored_config:
+        try:
+            # ensure it's a dict
+            if isinstance(stored_config, str):
+                stored_config = json.loads(stored_config)
+            config.update(stored_config)
+        except:
+            pass
+
     load_context()
     
     page.title = f"数字分身 - {config['agent_nickname']}"
@@ -156,17 +185,15 @@ Now, reply to the latest message from {config['user_nickname']}."""
             # Thinking delay
             await asyncio.sleep(random.uniform(1.0, 2.5))
             
-            response = await client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=messages,
-                temperature=1.3,
-                max_tokens=500
-            )
-            reply = response.choices[0].message.content
+            # Call API using our robust function
+            reply = await call_deepseek_api(messages)
             
             chat_history.append({"role": "user", "content": full_message})
             chat_history.append({"role": "assistant", "content": reply})
-            if len(chat_history) > 20: chat_history = chat_history[-20:]
+            if len(chat_history) > 20: 
+                # keep it a list, not slice assignment if global
+                # actually chat_history is global list, so slice assignment is good
+                chat_history[:] = chat_history[-20:]
 
             # Handle multi-bubble response
             parts = reply.split("|||")
@@ -180,6 +207,7 @@ Now, reply to the latest message from {config['user_nickname']}."""
                     
         except Exception as e:
             add_system_message(f"Error: {str(e)}")
+            print(f"API Error: {e}")
 
     async def trigger_ai_response():
         nonlocal pending_user_messages
@@ -220,7 +248,10 @@ Now, reply to the latest message from {config['user_nickname']}."""
         def save_settings(e):
             config['user_nickname'] = user_nick.value
             config['agent_nickname'] = agent_nick.value
-            save_config(config)
+            
+            # Save to client storage
+            page.client_storage.set("app_config", config)
+            
             page.title = f"数字分身 - {config['agent_nickname']}"
             page.dialog.open = False
             page.update()
